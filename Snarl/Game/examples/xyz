@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+from sys import path
+path.append('../')
+from consoleController import ConsoleController
+from controller import LocalGhostController, LocalZombieController, SingleLocalObserverController
+from hallway import Hallway
+from levelManagerBuilder import LevelManagerBuilder
+from point import Point
+from roomBuilder import RoomBuilder
+LevelManagerBuilder(
+#    ).setRandomStartingPoints(True
+    ).setKeyLocation(Point(1, 3)
+    ).setExitLocation(Point(12, 13)
+    ).addLevelComponent(RoomBuilder(
+        ).setUpperLeftPosition(Point(0, 0)
+        ).setSize(5, 5
+        ).addDoors([Point(2, 4)]
+        ).build()
+    ).addLevelComponent(RoomBuilder(
+        ).setUpperLeftPosition(Point(10, 10)
+        ).setSize(5, 5
+        ).addDoors([Point(0, 2)]
+        ).build()
+    ).addLevelComponent(Hallway([
+        Point(2, 4), Point(2, 6), Point(7, 6), Point(7, 8), Point(0, 8),
+        Point(0, 12), Point(10, 12)
+    ])).registerPlayer('p', 'player1', controller = ConsoleController()
+#    ).registerAdversary('zombie', 'zombie1', controller = LocalZombieController()
+    ).registerAdversary('ghost', 'ghost1', controller = LocalGhostController()
+    ).registerObserver('obs', SingleLocalObserverController()
+    ).build().run()

@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+#
+# testLevel (python executable)
+# authors: Michael Curley & Drake Moore
+# notes:
+#   - based on testRoom code, however input validation has been stripped since
+#     the assignment ensures valid input will be given
+#
+
+from actor import Actor
+from hallway import Hallway
+from interactable import Interactable
+from json import dumps as jsonToStr, loads as strToJson
+from level import Level
+from point import Point
+from room import Room
+from sys import stdin
+from tile import Tile
+
+
+# ----- globals (constants) ----------------------------------------------------
+
+TYPE_KEY = 'type'
+ROOMS_KEY = 'rooms'
+HALLWAYS_KEY = 'hallways'
+OBJECTS_KEY = 'objects'
+TRAVERSABLE_KEY = 'traversable'
+REACHABLE_KEY = 'reachable'
+OBJECT_KEY = 'object'
+KEY_TYPE = 'key'
+EXIT_TYPE = 'exit'
+VOID_KEY = 'void'
+ROOM_KEY = 'room'
+HALLWAY_KEY = 'hallway'
+POSITION_KEY = 'position'
+ORIGIN_KEY = 'origin'
+BOUNDS_KEY = 'bounds'
+LAYOUT_KEY = 'layout'
+ROWS_KEY = 'rows'
+COLUMNS_KEY = 'columns'
+FROM_KEY = 'from'
+TO_KEY = 'to'
+WAYPOINTS_KEY = 'waypoints'
+TILE_ID_MAP = { 0: Tile.WALL, 1: Tile.EMPTY, 2: Tile.DOOR }
+
+
+# ----- main -------------------------------------------------------------------
+
+def main():
+    jsonLevel, jsonPoint = getRawJsonInput()
+    level = createLevel(jsonLevel)
+    destination = createPoint(jsonPoint)
+    destinationTile = getDestinationTile(destination, level)
+    traversable = isTraversable(destinationTile)
+    maybeObject = getObjectType(destinationTile)
+    roomHallwayOrVoid, reachable = getDestinationTypeAndReachable(
+            destination, traversable, level)
+    formatOutput(traversable, maybeObject, roomHallwayOrVoid, reachable)
+
+    # ----- end main -----------------------------------------------------------
+
+
+def getRawJsonInput() -> (dict, list):
+    """ gets raw user input and returns a tuple of the json level and point """
+    jsonIn = strToJson(stdin.read())
+    jsonLevel = jsonIn[0]
+    jsonPoint = jsonIn[1]
+    return jsonLevel, jsonPoint
+
+
+def getDestinationTile(destination: Point, level: Level) -> any:
+    """ gets the destination tile in the level, this may be a Tile or
+    Interactable """
+    levelLayoutWithKeyAndExit = level.produceTileLayout()
+    return level.getTileInLayout(destination, levelLayoutWithKeyAndExit)
+
+
+def isTraversable(destinationTile: any) -> bool:
+    """ returns if the destination tile is traversable """
+    return destinationTile in [Tile.EMPTY, Tile.DOOR, Tile.HALLWAY,
+            Interactable.KEY, Interactable.EXIT]
+
+def getObjectType(destinationTile: any) -> str:
+    """ returns if the destination tile is a key, exit or null """
+    global KEY_TYPE, EXIT_TYPE
+    return {
+        Interactable.KEY: KEY_TYPE, Interactable.EXIT: EXIT_TYPE
+    }.get(destinationTile, None)
+
+
+def getDestinationTypeAndReachable(destination: Point, traversable: bool,
+        level: Level) -> (str, list):
+    """ returns a tuple of the destination type and a list of reachable rooms """
+    global VOID_KEY, ROOM_KEY, HALLWAY_KEY
+    roomHallwayOrVoid = VOID_KEY
+    reachable = list()
+    for floorPlan in level.rooms + level.hallways:
+        if floorPlan.tilePositionWithinBounds(destination):
+            if isinstance(floorPlan, Room):
+                room = floorPlan
+                roomHallwayOrVoid = ROOM_KEY
+                for hallway in room.connectedHallways:
+                    if hallway.exitRoom is room:
+                        reachable.append(hallway.entryRoom.upperLeftPosition)
+                    else:
+                        reachable.append(hallway.exitRoom.upperLeftPosition)
+            else:
+                hallway = floorPlan
+                roomHallwayOrVoid = HALLWAY_KEY
+                reachable.append(hallway.entryRoom.upperLeftPosition)
+                reachable.append(hallway.exitRoom.upperLeftPosition)
+            break
+    return roomHallwayOrVoid, list(map(pointToJson, reachable))
+
+
+def formatOutput(traversable: bool, maybeObject: str, roomHallwayOrVoid: str,
+        reachable: list):
+    """ formats the output and prints to stdout """
+    global TRAVERSABLE_KEY, OBJECT_KEY, TYPE_KEY, REACHABLE_KEY
+    print(jsonToStr({
+        TRAVERSABLE_KEY: traversable,
+        OBJECT_KEY:      maybeObject,
+        TYPE_KEY:        roomHallwayOrVoid,
+        REACHABLE_KEY:   reachable
+    }))
+
+
+def createLevel(jsonLevel: dict) -> Level:
+    """ creates the custom implementation of Level from the json level """
+    global ROOMS_KEY, HALLWAYS_KEY, OBJECTS_KEY
+    jsonRooms = jsonLevel[ROOMS_KEY]
+    jsonHallways = jsonLevel[HALLWAYS_KEY]
+    jsonObjects = jsonLevel[OBJECTS_KEY]
+    rooms = list(map(createRoom, jsonRooms))
+    hallways = list(map(createHallway, jsonHallways))
+    keyPosition, exitPosition = getKeyAndExitPositionsFromJsonObjects(jsonObjects)
+    level = Level(rooms, hallways)
+    level.setTileInLayout(keyPosition, Interactable.KEY)
+    level.setTileInLayout(exitPosition, Interactable.EXIT)
+    return level
+
+
+def createRoom(jsonRoom: dict) -> Room:
+    """ creates the custom implementation of Room from the json room """
+    global ORIGIN_KEY, LAYOUT_KEY, TILE_ID_MAP
+    jsonOrigin = jsonRoom[ORIGIN_KEY]
+    upperLeftPosition = createPoint(jsonOrigin)
+    jsonLayout = jsonRoom[LAYOUT_KEY]
+    layout = list(map(lambda row: list(map(TILE_ID_MAP.get, row)), jsonLayout))
+    return Room(upperLeftPosition, layout)
+
+
+def createHallway(jsonHallway: dict) -> Hallway:
+    """ creates the custom implementation of Hallway from the json hallway """
+    global FROM_KEY, TO_KEY, WAYPOINTS_KEY
+    jsonFrom = jsonHallway[FROM_KEY]
+    jsonTo = jsonHallway[TO_KEY]
+    jsonWaypoints = jsonHallway[WAYPOINTS_KEY]
+    allJsonWaypoints = [jsonFrom] + jsonWaypoints + [jsonTo]
+    allWaypoints = list(map(createPoint, allJsonWaypoints))
+    return Hallway(allWaypoints)
+
+
+def getKeyAndExitPositionsFromJsonObjects(jsonObjects: list) -> (Point, Point):
+    """ extracts the key Point and exit Point from the json objects """
+    global KEY_TYPE, EXIT_TYPE
+    keyPoint = extractPointTypeFromJsonObjects(jsonObjects, KEY_TYPE)
+    exitPoint = extractPointTypeFromJsonObjects(jsonObjects, EXIT_TYPE)
+    return keyPoint, exitPoint
+
+
+def extractPointTypeFromJsonObjects(jsonObjects: list, jsonType: str) -> Point:
+    """ extracts a Point from the json objects of the specified type """
+    global TYPE_KEY, POSITION_KEY
+    jsonObject = list(filter(lambda jsonObject: jsonObject[TYPE_KEY] == jsonType, jsonObjects))[0]
+    jsonPoint = jsonObject[POSITION_KEY]
+    return createPoint(jsonPoint)
+
+
+def createPoint(jsonPoint: list) -> Point:
+    """ creates the custom implementation of Point from the json point """
+    return Point(jsonPoint[1], jsonPoint[0])
+
+
+def pointToJson(point: Point) -> list:
+    """ returns the point as the json representation for output """
+    return [point.Y, point.X]
+
+
+# ----- executable entry -------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

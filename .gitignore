@@ -1,0 +1,10 @@
+__pycache__/
+Snarl/tests/Level/*.py
+Snarl/tests/Room/*.py
+Snarl/tests/State/*.py
+Snarl/tests/Manager/*.py
+Snarl/Local/*.py
+Snarl/Network/*.py
+Snarl/AdversaryNetwork/*.py
+Snarl/HitAndCombatNetwork/*.py
+.idea/

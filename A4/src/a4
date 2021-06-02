@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+#
+# a4 (python3 executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from json import loads as jsonLoads, dumps as jsonDumps
+from socket import socket, AF_INET, SOCK_STREAM
+from sys import argv
+from typing import Union
+
+
+# ----- globals (constants) ----------------------------------------------------
+
+# command line args and general defaults
+HOST_ARG_INDEX = 1
+PORT_ARG_INDEX = 2
+USER_ARG_INDEX = 3
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 8000
+DEFAULT_USER = 'Glorifrir Flintshoulder'
+SOCKET_DATA_ENCODING = 'utf-8'
+
+# user input command specifiers
+COMMAND_KEY = 'command'
+PARAMS_KEY = 'params'
+ROADS_COMMAND = 'roads'
+ROADS_PARAMS_FROM_KEY = 'from'
+ROADS_PARAMS_TO_KEY = 'to'
+PLACE_COMMAND = 'place'
+PLACE_PARAMS_CHARACTER_KEY = 'character'
+PLACE_PARAMS_TOWN_KEY = 'town'
+PASSAGE_SAFE_COMMAND = 'passage-safe?'
+PASSAGE_SAFE_PARAMS_CHARACTER_KEY = 'character'
+PASSAGE_SAFE_PARAMS_TOWN_KEY = 'town'
+
+# server request specifiers
+CREATE_REQUEST_TOWNS_KEY = 'towns'
+CREATE_REQUEST_ROADS_KEY = 'roads'
+CREATE_REQUEST_ROADS_FROM_KEY = 'from'
+CREATE_REQUEST_ROADS_TO_KEY = 'to'
+BATCH_REQUEST_CHARACTERS_KEY = 'characters'
+BATCH_REQUEST_CHARACTERS_NAME_KEY = 'name'
+BATCH_REQUEST_CHARACTERS_TOWN_KEY = 'town'
+BATCH_REQUEST_QUERY_KEY = 'query'
+BATCH_REQUEST_QUERY_CHARACTER_KEY = 'character'
+BATCH_REQUEST_QUERY_DESTINATION_KEY = 'destination'
+BATCH_RESPONSE_INVALID_KEY = 'invalid'
+BATCH_RESPONSE_INVALID_NAME_KEY = 'name'
+BATCH_RESPONSE_INVALID_TOWN_KEY = 'town'
+BATCH_RESPONSE_RESPONSE_KEY = 'response'
+
+# print message formatters
+BAD_USER_INPUT_FORMAT_JSON = '{{ "error" : "not a request", "object" : {0} }}'
+SERVER_CALLS_ME_FORMAT_USER = '["the server will call me", "{0}"]'
+SERVER_RESPONSE_INVALID_FORMAT_NAME_TOWN = '["invalid placement", {{ "name" : "{0}", "town" : "{1}" }} ]'
+SERVER_RESPONSE_QUERY_FORMAT_NAME_TOWN_RESPONSE = '["the response for", {{ "character" : "{0}", "destination" : "{1}" }}, "is", {2}]'
+
+
+
+# ----- custom exception -------------------------------------------------------
+
+# empty definition to differentiate between system/library exceptions and
+# expected errors for the traveller client
+class TravellerException(Exception):
+    pass
+
+
+
+# ----- main -------------------------------------------------------------------
+
+# main functonality for the Traveller client, runs start up, enters processing
+# phase and finally shuts down the client
+def main(ipAddressOrHostName: str, portNumber: int, userName: str):
+    serverSocket = None
+    try:
+        serverSocket, sessionId, townNames = startUpTravellerClient(
+                ipAddressOrHostName, portNumber, userName)
+        executeTravellerClientProcessingPhase(serverSocket, sessionId, townNames)
+    # catch all exceptions including traveller exceptions
+    except Exception as ex:
+        print(ex)
+    finally:
+        shutDownTravellerClient(serverSocket)
+    # end main
+
+
+
+# ----- start up ---------------------------------------------------------------
+
+# creates a socket and establishes a connection with the server based on the
+# given parameters, returns the connection socket, session id and a list of
+# towns created from a single roads command
+def startUpTravellerClient(ipAddressOrHostName: str,
+                           portNumber: int,
+                           userName: str) -> (socket, str, list):
+    serverSocket = createSocketConnection(ipAddressOrHostName, portNumber)
+    sessionId = getSessionIdFromUserName(serverSocket, userName)
+    townNames = createRoadNetwork(serverSocket)
+    return serverSocket, sessionId, townNames
+
+
+# creates and returns a socket based on the given address/host and port number
+def createSocketConnection(ipAddressOrHostName: str, portNumber: int) -> socket:
+    serverSocket = socket(AF_INET, SOCK_STREAM)
+    serverSocket.connect((ipAddressOrHostName, portNumber))
+    return serverSocket
+
+
+# associates the user with this client and returns the corresponding session id
+def getSessionIdFromUserName(serverSocket: socket, userName: str) -> str:
+    sendJsonToServer(serverSocket, userName)
+    sessionId = receiveJsonFromServer(serverSocket)
+    if not isinstance(sessionId, str):
+        raise TravellerException('Error: Server returned a non-string session id.')
+    print('Traveller client started with session id: "{0}".'.format(sessionId))
+
+    # indicate the server recognizes the user
+    global SERVER_CALLS_ME_FORMAT_USER
+    print(SERVER_CALLS_ME_FORMAT_USER.format(userName))
+    return sessionId
+
+
+# waits for user input of a roads command prior to sending a create request to
+# the server, returns a set of string town names
+def createRoadNetwork(serverSocket: socket) -> set:
+    userJson = getAndVerifyUserInputJson(prompt = 'Enter JSON roads command: ')
+    global ROADS_COMMAND, COMMAND_KEY
+    command = userJson[COMMAND_KEY]
+    
+    # first command must be a roads command only
+    if command != ROADS_COMMAND:
+        raise TravellerException('Error: First command must be a roads command.')
+
+    global PARAMS_KEY
+    params = userJson[PARAMS_KEY]
+    townNames, createRequest = generateCreateRequest(params)
+    sendJsonToServer(serverSocket, createRequest)
+    return townNames
+
+
+# returns a tuple of the set of string town names and a json object for the
+# create request for the server
+def generateCreateRequest(roadsCommandParams: list) -> (set, dict):
+    townNamesSet = set()
+    createRequestRoadsList = list()
+    global ROADS_PARAMS_FROM_KEY, ROADS_PARAMS_TO_KEY
+    global CREATE_REQUEST_ROADS_FROM_KEY, CREATE_REQUEST_ROADS_TO_KEY
+    for param in roadsCommandParams:
+        # pull out the town information from the command
+        fromTown = param[ROADS_PARAMS_FROM_KEY]
+        toTown = param[ROADS_PARAMS_TO_KEY]
+        # set prevents duplicates from being added to the collection
+        townNamesSet.add(fromTown)
+        townNamesSet.add(toTown)
+        # add the formatted from-to roads object
+        createRequestRoadsList.append({CREATE_REQUEST_ROADS_FROM_KEY: fromTown,
+            CREATE_REQUEST_ROADS_TO_KEY: toTown})
+
+    global CREATE_REQUEST_TOWNS_KEY, CREATE_REQUEST_ROADS_KEY
+    createRequest = {CREATE_REQUEST_TOWNS_KEY: list(townNamesSet),
+        CREATE_REQUEST_ROADS_KEY: createRequestRoadsList}
+    return townNamesSet, createRequest
+
+
+
+# ----- processing phase -------------------------------------------------------
+
+# interactive loop that allows multiple place commands before a passage safe
+# command prior to server communication, will break for Ctrl+d signal (eof)
+def executeTravellerClientProcessingPhase(serverSocket: socket,
+                                          sessionId: str,
+                                          townNames: set):
+    batchRequest = dict()
+    characterNames = set()
+    clearBatchRequestCharacters(batchRequest)
+    global COMMAND_KEY, ROADS_COMMAND, PLACE_COMMAND
+    while 1:
+        try:
+            # get the user input and ensure it is not a roads command
+            userJson = getAndVerifyUserInputJson(characterNames, townNames,
+                    'Enter JSON place or passage safe command: ')
+            command = userJson[COMMAND_KEY]
+            if command == ROADS_COMMAND:
+                print('Error: A roads command can only be given once.')
+                break
+
+            # continually add information for each place command
+            if command == PLACE_COMMAND:
+                characterPlaced = addPlaceCommandToBatchRequest(userJson,
+                        batchRequest)
+                characterNames.add(characterPlaced)
+
+            # a passage safe command will stop the accumulation of data
+            else: # command == PASSAGE_SAFE_COMMAND
+                characterName, townName = finalizeBatchRequestWithPassageSafeCommand(
+                        userJson, batchRequest)
+                sendBatchRequestAndRenderResponse(serverSocket, batchRequest,
+                        characterName, townName)
+                # characters must be placed prior to each passage query
+                characterNames.clear()
+                clearBatchRequestCharacters(batchRequest)
+        # any formatting error should just be printed
+        except TravellerException as ex:
+            print(ex)
+
+
+# initializes the batch request characters key with an empty list in the given
+# dictionary
+def clearBatchRequestCharacters(batchRequest: dict):
+    global BATCH_REQUEST_CHARACTERS_KEY
+    batchRequest[BATCH_REQUEST_CHARACTERS_KEY] = list()
+
+
+# appends a formatted place dictionary in the batch request characters list,
+# returns the placed characters name
+def addPlaceCommandToBatchRequest(placeCommand: dict,
+                                  batchRequest: dict) -> str:
+    global PARAMS_KEY
+    placeParams = placeCommand[PARAMS_KEY]
+    
+    global PLACE_PARAMS_CHARACTER_KEY, PLACE_PARAMS_TOWN_KEY
+    characterName = placeParams[PLACE_PARAMS_CHARACTER_KEY]
+    townName = placeParams[PLACE_PARAMS_TOWN_KEY]
+    
+    global BATCH_REQUEST_CHARACTERS_KEY
+    batchCharacters = batchRequest[BATCH_REQUEST_CHARACTERS_KEY]
+
+    global BATCH_REQUEST_CHARACTERS_NAME_KEY, BATCH_REQUEST_CHARACTERS_TOWN_KEY
+    batchCharacters.append({BATCH_REQUEST_CHARACTERS_NAME_KEY: characterName,
+        BATCH_REQUEST_CHARACTERS_TOWN_KEY: townName})
+
+    return characterName
+
+
+# sets the query parameters for the given batch request, returns a tuple of the
+# queried character name and the destination town
+def finalizeBatchRequestWithPassageSafeCommand(passageSafeCommand: dict,
+                                               batchRequest: dict) -> (str, str):
+    global PARAMS_KEY
+    passageSafeParams = passageSafeCommand[PARAMS_KEY]
+
+    global PASSAGE_SAFE_PARAMS_CHARACTER_KEY, PASSAGE_SAFE_PARAMS_TOWN_KEY
+    characterName = passageSafeParams[PASSAGE_SAFE_PARAMS_CHARACTER_KEY]
+    townName = passageSafeParams[PASSAGE_SAFE_PARAMS_TOWN_KEY]
+
+    global BATCH_REQUEST_QUERY_KEY
+    global BATCH_REQUEST_QUERY_CHARACTER_KEY, BATCH_REQUEST_QUERY_DESTINATION_KEY
+    batchRequest[BATCH_REQUEST_QUERY_KEY] = {
+            BATCH_REQUEST_QUERY_CHARACTER_KEY: characterName,
+            BATCH_REQUEST_QUERY_DESTINATION_KEY: townName}
+
+    return characterName, townName
+
+
+# sends the request to the server and prints the servers formatted response to
+# standard output, will show any invalid placements and the query response
+def sendBatchRequestAndRenderResponse(serverSocket: socket,
+                                      batchRequest: dict,
+                                      characterName: str,
+                                      townName: str):
+    sendJsonToServer(serverSocket, batchRequest)
+    responseJson = receiveJsonFromServer(serverSocket)
+
+    # assuming server sends valid json objects
+    global BATCH_RESPONSE_INVALID_KEY, BATCH_RESPONSE_RESPONSE_KEY
+    invalidPlacements = responseJson[BATCH_RESPONSE_INVALID_KEY]
+    queryResponse = responseJson[BATCH_RESPONSE_RESPONSE_KEY]
+    
+    global SERVER_RESPONSE_INVALID_FORMAT_NAME_TOWN 
+    global BATCH_RESPONSE_INVALID_NAME_KEY, BATCH_RESPONSE_INVALID_TOWN_KEY
+    for invalidPlacement in invalidPlacements:
+        print(SERVER_RESPONSE_INVALID_FORMAT_NAME_TOWN.format(
+            invalidPlacement[BATCH_RESPONSE_INVALID_NAME_KEY],
+            invalidPlacement[BATCH_RESPONSE_INVALID_TOWN_KEY]))
+
+    global SERVER_RESPONSE_QUERY_FORMAT_NAME_TOWN_RESPONSE
+    print(SERVER_RESPONSE_QUERY_FORMAT_NAME_TOWN_RESPONSE.format(
+        characterName, townName, jsonDumps(queryResponse)))
+
+
+
+
+# ----- shut down --------------------------------------------------------------
+
+# closes the socket connection and prints a friendly message
+def shutDownTravellerClient(serverSocket: socket):
+    if serverSocket is not None:
+        serverSocket.close()
+        print('Traveller client successfully shut down.')
+
+
+
+# ----- general helpers --------------------------------------------------------
+
+# gets the user input from standard in, raises an exception if it is malformed
+# based on the protocol for the assignment, character names and town names only
+# need to be provided for place and passage safe commands, returns the json
+# object representing the user's command
+def getAndVerifyUserInputJson(characterNames: set = None,
+                              townNames: set = None,
+                              prompt: str = '') -> dict:
+    # outside of try block so EOFError can be raised
+    userInput = input(prompt)
+    try:
+        # any verification failure will throw an exception
+        commandJson = jsonLoads(userInput)
+        verifyCommandHasValidKeys(commandJson)
+        command, params = verifyCommandIsValid(commandJson)
+        verifyCommandHasValidParams(command, params, characterNames, townNames)
+    except:
+        raiseBadInputException(userInput)
+    return commandJson
+
+
+# given a user command will raise an exception if keys are not exact
+def verifyCommandHasValidKeys(commandJson: dict):
+    global COMMAND_KEY, PARAMS_KEY
+    expectedCommandKeys = [COMMAND_KEY, PARAMS_KEY]
+    if not doesDictionaryContainAllKeys(commandJson, expectedCommandKeys):
+        raise TravellerException
+
+
+# must verifyCommandHasValidKeys prior, with valid keys will return the command
+# string and the params object as a tuple (params may be a list or dictionary),
+# will raise exception if command is invalid
+def verifyCommandIsValid(commandJson: dict) -> (str, Union[list, dict]):
+    global COMMAND_KEY, ROADS_COMMAND, PLACE_COMMAND, PASSAGE_SAFE_COMMAND
+    command = commandJson[COMMAND_KEY]
+    validCommands = [ROADS_COMMAND, PLACE_COMMAND, PASSAGE_SAFE_COMMAND]
+    if command not in validCommands:
+        raise TravellerException
+    global PARAMS_KEY
+    return command, commandJson[PARAMS_KEY]
+
+
+# given a command string will verify the parameters conform to the protocol
+def verifyCommandHasValidParams(command: str,
+                                params: Union[list, dict],
+                                characterNames: set,
+                                townNames: set):
+    global ROADS_COMMAND, PLACE_COMMAND
+    if command == ROADS_COMMAND:
+        verifyRoadsParams(params)
+    elif command == PLACE_COMMAND:
+        verifyPlaceParams(params, townNames)
+    else: # command == PASSAGE_SAFE_COMMAND
+        verifyPassageSafeParams(params, characterNames, townNames)
+
+
+# will raise exception if the params are not a list of dictionary, if the keys
+# in each dictionary are incorrect or if any values are not strings
+def verifyRoadsParams(params: list):
+    if not doesListContainSingleType(params, dict):
+        raise TravellerException
+    
+    global ROADS_PARAMS_FROM_KEY, ROADS_PARAMS_TO_KEY
+    expectedKeys = [ROADS_PARAMS_FROM_KEY, ROADS_PARAMS_TO_KEY]
+    for param in params:
+        if not doesDictionaryContainAllKeys(param, expectedKeys):
+            raise TravellerException
+
+        if not doesListContainSingleType(list(param.values()), str):
+            raise TravellerException
+
+
+# will raise exception if the params don't have the correct keys or the town
+# parameter of params is not in the given set of created townNames
+def verifyPlaceParams(params: dict, townNames: set):
+    global PLACE_PARAMS_CHARACTER_KEY, PLACE_PARAMS_TOWN_KEY
+    expectedKeys = [PLACE_PARAMS_CHARACTER_KEY, PLACE_PARAMS_TOWN_KEY]
+    if not doesDictionaryContainAllKeys(params, expectedKeys):
+        raise TravellerException
+    
+    townName = params[PLACE_PARAMS_TOWN_KEY]
+    if townName not in townNames:
+        raise TravellerException
+
+
+# will raise exception if the params don't have the correct keys or the town
+# or character parameters are not in the corresponding sets
+def verifyPassageSafeParams(params: dict, characterNames: set, townNames: set):
+    global PASSAGE_SAFE_PARAMS_CHARACTER_KEY, PASSAGE_SAFE_PARAMS_TOWN_KEY
+    expectedKeys = [PASSAGE_SAFE_PARAMS_CHARACTER_KEY, PASSAGE_SAFE_PARAMS_TOWN_KEY]
+    if not doesDictionaryContainAllKeys(params, expectedKeys):
+        raise TravellerException
+    characterName = params[PASSAGE_SAFE_PARAMS_CHARACTER_KEY]
+    if characterName not in characterNames:
+        raise TravellerException
+
+    townName = params[PASSAGE_SAFE_PARAMS_TOWN_KEY]
+    if townName not in townNames:
+        raise TravellerException
+    
+
+# raises an exception with a friendly string formatting the incorrect user input
+def raiseBadInputException(userInput: str):
+    raise TravellerException(BAD_USER_INPUT_FORMAT_JSON.format(
+        userInput.strip()))
+
+
+# sends either a dictionary or string to the server
+def sendJsonToServer(serverSocket: socket,
+                     jsonRequest: Union[dict, str]):
+    message = jsonDumps(jsonRequest)
+    global SOCKET_DATA_ENCODING
+    data = message.encode(SOCKET_DATA_ENCODING)
+    serverSocket.sendall(data)
+
+
+# receives either a dictionary or a string from the server, raises exception if
+# deserialization of the received string fails
+def receiveJsonFromServer(serverSocket: socket) -> Union[dict, str]:
+    global SOCKET_DATA_ENCODING
+    message = ''
+    recvDataSize = 4096
+    while 1:
+        data = serverSocket.recv(recvDataSize)
+        message += data.decode(SOCKET_DATA_ENCODING)
+        if len(data) < recvDataSize or message.endswith('\n'):
+            break
+    try:
+        return jsonLoads(message)
+    except:
+        # raising normal exception to kill the interactive loop if needed
+        raise Exception('Error: Server returned a non-JSON type: {0}.'.format(
+            message.strip()))
+
+
+# returns if the given dictionary contains every key in the list
+def doesDictionaryContainAllKeys(dictionary: dict, keys: list) -> bool:
+    return (isinstance(dictionary, dict) and
+            len(dictionary) == len(keys) and
+            all(key in dictionary.keys() for key in keys))
+
+
+# returns if every type in the given list is the same as the given type
+def doesListContainSingleType(aList: list, aType: type) -> bool:
+    return (isinstance(aList, list) and
+            all(map(lambda element: isinstance(element, aType), aList)))
+
+
+# returns the value in the list at the given index, if index is out of range
+# returns the default value
+def getIndexOrDefault(fromList: list, index: int, default: any):
+    return fromList[index] if index < len(fromList) else default
+
+
+
+# ----- executable entry -------------------------------------------------------
+
+# main entry, tries to get 3 command line arguments for the host/ip address,
+# the port number and the user's name
+if __name__ == '__main__':
+    main(getIndexOrDefault(argv, HOST_ARG_INDEX, DEFAULT_HOST),
+            int(getIndexOrDefault(argv, PORT_ARG_INDEX, DEFAULT_PORT)),
+            getIndexOrDefault(argv, USER_ARG_INDEX, DEFAULT_USER))
+
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

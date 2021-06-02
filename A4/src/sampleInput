@@ -1,0 +1,15 @@
+stdin commands:
+{ "command" : "roads", "params" : [ {"from" : "rowley", "to" : "ipswich" }, {"from" : "rowley", "to" : "boston" }, {"from" : "cambridge", "to" : "boston" }, {"from" : "littleton", "to" : "boston" } ] }
+
+
+{ "command" : "place", "params" : { "character" : "mike", "town" : "boston" } }
+{ "command" : "place", "params" : { "character" : "jack", "town" : "rowley" } }
+{ "command" : "place", "params" : { "character" : "drake", "town" : "cambridge" } }
+
+
+{ "command" : "passage-safe?", "params" : { "character" : "mike", "town" : "cambridge" } }
+
+
+
+server response:
+{ "invalid" : [ { "name" : "jack", "town" : "rowley" }, { "name" : "drake", "town" : "cambridge" } ], "response" :  false }

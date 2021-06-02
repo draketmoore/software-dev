@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+#
+# snarlServer (python3 executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from argparse import ArgumentParser, ArgumentTypeError, Namespace
+from controller import Controller, LocalGhostController, LocalZombieController, SingleLocalObserverController
+from gameManager import GameManager
+from levelManagerBuilder import LevelManagerBuilder
+from levelManager import LevelManager
+from json import loads, dumps
+from serverController import ServerController
+from snarlParser import SnarlParser
+from socket import socket, AF_INET, SOCK_STREAM, timeout as SocketTimeout
+from time import sleep
+
+
+def main():
+    args = parseArguments()
+    levels = parseLevels(args.levels)
+    levelBuilders = registerLevels(levels)
+    with createSocket(args.address, args.port, args.wait) as soc:
+        try:
+            registerPlayers(levelBuilders, args.clients, soc)
+            registerAdversaries(levelBuilders)
+            if args.observe:
+                registerObservers(levelBuilders)
+            levelManagers = randomizeStartPointsAndCreateManagers(levelBuilders)
+            gameManager = GameManager(levelManagers)
+            gameManager.run()
+        except Exception as e:
+            print(f'Server {type(e)}: {e}')
+
+
+# ----- argument parsing -------------------------------------------------------
+
+def parseArguments() -> Namespace:
+    """ returns a Namespace containing the command line arguments, additional
+    verification is required for arguments that interact with each other """
+    ap = ArgumentParser(description = 'start a snarl server')
+    ap.add_argument('--levels', metavar = 'FILE', type = str, default = 'snarl.levels',
+            help = 'where FILE is the name of a file containing JSON level specifications')
+    ap.add_argument('--clients', metavar = 'N', type = clientsType, default = 4,
+            help = 'where {0} <= N <= {1} is the number of clients'.format(
+                LevelManager.MinPlayers, LevelManager.MaxPlayers))
+    ap.add_argument('--wait', metavar = 'N', type = waitType, default = 60,
+            help = 'where N is the number of seconds to wait for the next client to connect (determines reg_timeout)')
+    ap.add_argument('--observe', action = 'store_true',
+            help = 'will start a local observer to display the progress of the game')
+    ap.add_argument('--address', metavar = 'IP', type = str, default = '127.0.0.1',
+            help = 'where IP is an IP address on which the server should listen for connections')
+    ap.add_argument('--port', metavar = 'NUM', type = int, default = 45678,
+            help = 'where NUM is the port number the server will listen on')
+    return ap.parse_args()
+
+def clientsType(n):
+    """ represents a type for clients, ensures the number is valid """
+    n = int(n)
+    low = LevelManager.MinPlayers
+    high = LevelManager.MaxPlayers
+    if n < low or n > high:
+        raise ArgumentTypeError('client count must be between {0} and {1}'.format(
+            low, high))
+    return n
+
+def waitType(n):
+    """ represents a type for wait time, ensures the number is valid """
+    n = int(n)
+    if n < 1:
+        raise ArgumentTypeError('a game cannot wait 0 seconds for a client to join')
+    return n
+
+def parseLevels(fileName: str) -> list:
+    """ parses the input file for a list of json levels and returns a list of
+    (level, keyLocation, exitLocation) """
+    n = None
+    acc = ''
+    levels = list()
+    with open(fileName, 'r') as f:
+        for line in f.readlines():
+            acc += line
+            try:
+                fJson = loads(acc)
+                if isinstance(fJson, int) and n is None:
+                    n = fJson
+                else: # level
+                    lp = SnarlParser(fJson)
+                    levels.append((lp.level, lp.keyLocation, lp.exitLocation))
+                acc = ''
+            except:
+                continue
+    if n != len(levels):
+        raise ValueError('input json file given invalid level count')
+    return levels
+
+
+# ----- game init --------------------------------------------------------------
+
+def registerLevels(levels: list) -> list:
+    """ adds the level information to new builders and returns them """
+    return [LevelManagerBuilder(
+        ).addLevelComponent(level
+        ).setKeyLocation(keyLoc
+        ).setExitLocation(exitLoc)
+        for level, keyLoc, exitLoc in levels]
+
+def createSocket(address: str, port: int, wait: int) -> socket:
+    """ creates a socket instance to return """
+    s = socket(AF_INET, SOCK_STREAM)
+    s.settimeout(wait)
+    s.bind((address, port))
+    return s
+
+def registerPlayers(levelBuilders: list, clients: int, soc: socket):
+    """ registers local players with the builders """
+    bldr = LevelManagerBuilder()
+    for i in range(1, clients + 1):
+        try:
+            connection, controller = acceptClient(soc)
+        except SocketTimeout:
+            print(f'Client {i} failed to connect in time')
+            continue
+        while 1:
+            sleep(1)
+            connection.sendall(dumps('name').encode())
+            name = loads(connection.recv(1024).decode())
+            try:
+                bldr.registerPlayer(str(i), name, controller = controller)
+                break
+            except ValueError as e:
+                print(e)
+    for levelBuilder in levelBuilders:
+        levelBuilder.players = bldr.players
+
+def acceptClient(soc: socket) -> ServerController:
+    """ returns a server controller after accepting a client """
+    soc.listen()
+    connection, _ = soc.accept()
+    connection.sendall(dumps({
+        'type': 'welcome',
+        'info': 'Lonande'
+    }).encode())
+    return connection, ServerController(connection)
+
+
+def registerAdversaries(builders: list):
+    """ registers local adversaries with the builders """
+    level = 1
+    for builder in builders:
+        for i in range(int((float(level) / 2.0) + 1.0)):
+            registerAdversary(builder, 'zombie', i, LocalZombieController())
+        for i in range(int((float(level) - 1.0) / 2.0)):
+            registerAdversary(builder, 'ghost', i, LocalGhostController())
+        level += 1
+
+def registerAdversary(builder: LevelManagerBuilder, advType: str, i: int, controller: Controller):
+    """ registers an adversary with the builder """
+    builder.registerAdversary(advType, advType + str(i), controller = controller)
+
+
+def registerObservers(builders: list):
+    """ registers an observer with each builder """
+    for builder in builders:
+        builder.registerObserver('mainObserver', SingleLocalObserverController())
+
+def randomizeStartPointsAndCreateManagers(builders: list) -> list:
+    """ builds each builder in a returned list """
+    return [b.setRandomStartingPoints(True).build() for b in builders]
+
+
+# ----- main entry -------------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

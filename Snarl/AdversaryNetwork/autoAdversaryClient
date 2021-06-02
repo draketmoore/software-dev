@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+#
+# autoAdversaryClient (python3 executable)
+# authors: Michael Curley & Drake Moore
+# notes:
+#   - this is pretty much a copy of snarlClient, only players are not allowed
+#     and no action via command line is needed, it is a client wrapper for the
+#     original adversary's "AI"
+#
+
+from argparse import ArgumentParser, Namespace
+from clientController import ClientController
+from controller import Controller, LocalGhostController, LocalZombieController
+
+
+def main():
+    args = parseArguments()
+    controller = ClientController(getController(args.type),
+            args.address, args.port, args.type)
+    controller.run()
+
+def parseArguments() -> Namespace:
+    """ returns a Namespace containing the command line arguments, additional
+    verification is required for arguments that interact with each other """
+    ap = ArgumentParser(description = 'play a remote game of snarl over a network')
+    ap.add_argument('--address', metavar = 'IP', type = str, default = '127.0.0.1',
+            help = 'where IP is an IP address the client should connect to')
+    ap.add_argument('--port', metavar = 'NUM', type = int, default = 45678,
+            help = 'where NUM is the port number the client should connect to')
+    ap.add_argument('--type', metavar = 'TYPE', type = str, default = 'ghost',
+            help = 'the type of client you wish to be, either ghost or zombie')
+    return ap.parse_args()
+
+def getController(clientType: str) -> Controller:
+    """ returns the local controller or raises an error """
+    if clientType == 'ghost':
+        return LocalGhostController()
+    if clientType == 'zombie':
+        return LocalZombieController()
+    raise ValueError(f'An invalid client type was given: {clientType}.')
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

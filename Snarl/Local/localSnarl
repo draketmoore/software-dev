@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+#
+# localSnarl (python3 executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from argparse import ArgumentParser, ArgumentTypeError, Namespace
+from consoleController import ConsoleController
+from controller import Controller, LocalGhostController, LocalZombieController, SingleLocalObserverController
+from gameManager import GameManager
+from levelManagerBuilder import LevelManagerBuilder
+from levelManager import LevelManager
+from json import loads
+from snarlParser import SnarlParser
+from uuid import uuid1
+
+
+def main():
+    args = parseArguments()
+    levels = parseLevels(args.levels)
+    validateUserInput(args, levels)
+    levelBuilders = registerLevels(levels)
+    registerPlayers(levelBuilders, args)
+    registerAdversaries(levelBuilders)
+    if args.observe:
+        registerObservers(levelBuilders)
+    levelManagers = randomizeStartPointsAndCreateManagers(levelBuilders)
+    gameManager = GameManager(levelManagers, args.start)
+    gameManager.run()
+
+
+# ----- argument parsing -------------------------------------------------------
+
+def parseArguments() -> Namespace:
+    """ returns a Namespace containing the command line arguments, additional
+    verification is required for arguments that interact with each other """
+    ap = ArgumentParser(description = 'play a local game of snarl')
+    ap.add_argument('--levels', metavar = 'FILENAME', type = str, default = 'snarl.levels',
+            help = 'where FILENAME is the name of a file containing JSON level specifications')
+    ap.add_argument('--players', metavar = 'N', type = playersType, default = 1,
+            help = 'where {0} <= N <= {1} is the number of players'.format(
+                LevelManager.MinPlayers, LevelManager.MaxPlayers))
+    ap.add_argument('--start', metavar = 'N', type = startType, default = 1,
+            help = 'where N is the level to start from')
+    ap.add_argument('--observe', action = 'store_true',
+            help = ('by default only the players\' view will be presented, if ' +
+                'this option is given, an observer view (the full level) will be ' +
+                'presented in addition to the player view, this implies --players 1'))
+    return ap.parse_args()
+
+def playersType(n):
+    """ represents a type for players, ensures the number is valid """
+    n = int(n)
+    low = LevelManager.MinPlayers
+    high = LevelManager.MaxPlayers
+    if n < low or n > high:
+        raise ArgumentTypeError('player count must be between {0} and {1}'.format(
+            low, high))
+    return n
+
+def startType(n):
+    """ represents a type for start level, ensures the number is valid """
+    n = int(n)
+    if n < 1:
+        raise ArgumentTypeError('a game cannot start before level 1')
+    return n
+
+def parseLevels(fileName: str) -> list:
+    """ parses the input file for a list of json levels and returns a list of
+    (level, keyLocation, exitLocation) """
+    n = None
+    acc = ''
+    levels = list()
+    with open(fileName, 'r') as f:
+        for line in f.readlines():
+            acc += line
+            try:
+                fJson = loads(acc)
+                if isinstance(fJson, int) and n is None:
+                    n = fJson
+                else: # level
+                    lp = SnarlParser(fJson)
+                    levels.append((lp.level, lp.keyLocation, lp.exitLocation))
+                acc = ''
+            except:
+                continue
+    if n != len(levels):
+        raise ValueError('input json file given invalid level count')
+    return levels
+
+
+# ----- input data validation --------------------------------------------------
+
+def validateUserInput(args: Namespace, levels: list):
+    """ validates the user input based on their relation to each other """
+    if args.start > len(levels):
+        raise ValueError('a game cannot start on a level that does not exist')
+    if args.observe and args.players > 1:
+        raise ValueError('an observed game can only have 1 player')
+
+
+# ----- game init --------------------------------------------------------------
+
+def registerLevels(levels: list) -> list:
+    """ adds the level information to new builders and returns them """
+    return [LevelManagerBuilder(
+        ).addLevelComponent(level
+        ).setKeyLocation(keyLoc
+        ).setExitLocation(exitLoc)
+        for level, keyLoc, exitLoc in levels]
+
+def registerPlayers(levelBuilders: list, args: Namespace):
+    """ registers local players with the builders """
+    bldr = LevelManagerBuilder()
+    for i in range(1, args.players + 1):
+        while 1:
+            name = input('player {0} enter a name: '.format(i))
+            try:
+                bldr.registerPlayer(str(i), name, controller = ConsoleController())
+                break
+            except ValueError as e:
+                print(e)
+    print()
+    for levelBuilder in levelBuilders:
+        levelBuilder.players = bldr.players
+
+def registerAdversaries(builders: list):
+    """ registers local adversaries with the builders """
+    level = 1
+    for builder in builders:
+        for _ in range(int((float(level) / 2.0) + 1.0)):
+            registerAdversary(builder, 'zombie', LocalZombieController())
+        for _ in range(int((float(level) - 1.0) / 2.0)):
+            registerAdversary(builder, 'ghost', LocalGhostController())
+        level += 1
+
+def registerAdversary(builder: LevelManagerBuilder, advType: str, controller: Controller):
+    """ registers an adversary with the builder """
+    while 1:
+        try:
+            # only a duplicate name should throw  exception
+            # the probability of a duplicat uuid is extremely low, however it is
+            # placed in this loop to be safe
+            builder.registerAdversary(advType, str(uuid1()), controller = controller)
+            return
+        except:
+            continue
+
+
+def registerObservers(builders: list):
+    """ registers an observer with each builder """
+    for builder in builders:
+        builder.registerObserver('mainObserver', SingleLocalObserverController())
+
+def randomizeStartPointsAndCreateManagers(builders: list) -> list:
+    """ builds each builder in a returned list """
+    return [b.setRandomStartingPoints(True).build() for b in builders]
+
+
+# ----- main entry -------------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

@@ -1,0 +1,6 @@
+#!/bin/bash
+make
+clear
+(sleep 2 && kitty python3 snarlClient &) &
+./snarlServer --clients 1 --observe
+make clean

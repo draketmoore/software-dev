@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+#
+# testRoom (python executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from actor import Actor
+from levelManager import LevelManager
+from interactable import Interactable
+from json import loads as strToJson, dumps as jsonToStr
+from point import Point
+from room import Room
+from sys import stdin
+from tile import Tile
+
+
+# ----- globals (constants) ----------------------------------------------------
+
+TYPE_KEY = 'type'
+ROOM_TYPE = 'room'
+ORIGIN_KEY = 'origin'
+BOUNDS_KEY = 'bounds'
+LAYOUT_KEY = 'layout'
+ROWS_KEY = 'rows'
+COLUMNS_KEY = 'columns'
+EXPECTED_INPUT_ERROR = 'Expected input is of format: [ (room), (point) ]'
+ROOM_FORMAT_ERROR = ('Expected room format is\n' +
+                '\t{ "type"   : "room",\n' +
+                '\t  "origin" : (point),\n' +
+                '\t  "bounds" : (boundary-data),\n' +
+                '\t  "layout" : (tile-layout)\n' +
+                '\t}')
+POINT_FORMAT_ERROR = 'Expected point format is\n\t[Integer, Integer]'
+TILE_ID_MAP = { 0: Tile.WALL, 1: Tile.EMPTY, 2: Tile.DOOR }
+
+
+# ----- main -------------------------------------------------------------------
+
+def main():
+    # parse the json inputs to our custom objects
+    jsonRoom, jsonPoint = processRawJsonInput()
+    room = createRoom(jsonRoom)
+    actorLocation = createPoint(jsonPoint)
+    actorLocationStr = pointToJsonStr(actorLocation)
+    roomLocationStr = pointToJsonStr(room.upperLeftPosition)
+
+    # make sure the location is inside the room before gettign traversable points
+    if not isValidLocationInRoom(actorLocation, room):
+        print('[ "Failure: Point ", {0}, " is not in room at ", {1}]'.format(
+            actorLocationStr, roomLocationStr))
+        return
+
+    # create a game manager from the room with 1 player at the specified location
+    actorName = 'actor'
+    actor = Actor('a', actorName, moveRange = 1, traversableTiles = [
+        Tile.EMPTY, Tile.HALLWAY, Tile.DOOR, Interactable.KEY, Interactable.EXIT
+    ])
+    levelManager = LevelManager(room, [actor], list(), [actorLocation], list(),
+            keyLocation = None, exitLocation = None)
+
+    # our player is the only one at index 0, fetch the game state layout and
+    # list the valid moves to print to stdout
+    gameState = levelManager.getActorGameState(actorName)
+    validMoves = gameState.listValidMoves()
+    validMovesStr = ', '.join(map(pointToJsonStr, filter(lambda m: m != actorLocation, validMoves)))
+    msg = '[ "Success: Traversable points from ", {0}, " in room at ", {1}, " are ",\n\t[ {2} ]\n]'
+    print(msg.format(actorLocationStr, roomLocationStr, validMovesStr))
+
+    # ----- end main -----------------------------------------------------------
+
+
+def processRawJsonInput() -> (list, dict):
+    """ gets raw user input and returns a tuple of the json room and json point """
+    jsonIn = strToJson(stdin.read())
+    if not isinstance(jsonIn, list) or len(jsonIn) != 2:
+        global EXPECTED_INPUT_ERROR
+        raise ValueError(EXPECTED_INPUT_ERROR)
+    room = jsonIn[0]
+    if not isValidRoom(room):
+        global ROOM_FORMAT_ERROR
+        raise ValueError(ROOM_FORMAT_ERROR)
+    point = jsonIn[1]
+    if not isValidPoint(point):
+        global POINT_FORMAT_ERROR
+        raise ValueError(POINT_FORMAT_ERROR)
+    return room, point
+
+
+def isValidRoom(jsonRoom: dict) -> bool:
+    """ returns if the given json room is valid format """
+    global TYPE_KEY, ROOM_TYPE, ORIGIN_KEY, BOUNDS_KEY, LAYOUT_KEY
+    return (isinstance(jsonRoom, dict) and len(jsonRoom) == 4 and
+            jsonRoom.get(TYPE_KEY, None) == ROOM_TYPE and
+            isValidPoint(jsonRoom.get(ORIGIN_KEY, None)) and
+            isValidBounds(jsonRoom.get(BOUNDS_KEY, None)) and
+            isValidLayout(jsonRoom.get(LAYOUT_KEY, None), jsonRoom[BOUNDS_KEY]))
+
+
+def isValidPoint(jsonPoint: list) -> bool:
+    """ returns if the json point is valid format """
+    return (isinstance(jsonPoint, list) and len(jsonPoint) == 2 and
+            all(isinstance(coordinate, int) for coordinate in jsonPoint))
+
+def isValidBounds(jsonBounds: dict) -> bool:
+    """ returns if the json bounds is valid format """
+    global ROWS_KEY, COLUMNS_KEY
+    return (isinstance(jsonBounds, dict) and len(jsonBounds) == 2 and
+            all(key in [ROWS_KEY, COLUMNS_KEY] for key in jsonBounds.keys()) and
+            all(isinstance(bound, int) for bound in jsonBounds.values()))
+
+
+def isValidLayout(jsonLayout: list, jsonBounds: dict) -> bool:
+    """ returns if the json layout is valid and corresponds with the json bounds """
+    global ROWS_KEY, COLUMNS_KEY, TILE_ID_MAP
+    rowCount = jsonBounds[ROWS_KEY]
+    columnCount = jsonBounds[COLUMNS_KEY]
+    return (isinstance(jsonLayout, list) and len(jsonLayout) == rowCount and
+            all(len(row) == columnCount for row in jsonLayout) and
+            all(all(tile in TILE_ID_MAP.keys() for tile in row) for row in jsonLayout))
+
+
+def createRoom(jsonRoom: dict) -> Room:
+    """ creates the custom implementation of Room from the json room """
+    global ORIGIN_KEY, LAYOUT_KEY, TILE_ID_MAP
+    jsonOrigin = jsonRoom[ORIGIN_KEY]
+    upperLeftPosition = createPoint(jsonOrigin)
+    jsonLayout = jsonRoom[LAYOUT_KEY]
+    layout = list(map(lambda row: list(map(TILE_ID_MAP.get, row)), jsonLayout))
+    return Room(upperLeftPosition, layout)
+
+
+def createPoint(jsonPoint: list) -> Point:
+    """ creates the custom implementation of Point from the json point """
+    return Point(jsonPoint[1], jsonPoint[0])
+
+
+def isValidLocationInRoom(actorLocation: Point, room: Room) -> bool:
+    """ returns if the actor location falls within the bounds of the room """
+    return (actorLocation.X >= room.upperLeftPosition.X and
+            actorLocation.X < room.upperLeftPosition.X + room.width and
+            actorLocation.Y >= room.upperLeftPosition.Y and
+            actorLocation.Y < room.upperLeftPosition.Y + room.height)
+
+
+def pointToJsonStr(point: Point) -> str:
+    """ returns the point as the json string representation for output """
+    return '[{0}, {1}]'.format(point.Y, point.X)
+
+
+# ----- executable entry -------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+#
+# a2 (python3 executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from json import loads as strToJson
+from shlex import split as whitespaceSplit
+from sys import argv, stdin
+
+# globals (constants)
+SUM_COMMAND_LINE_ARG = '--sum'
+PRODUCT_COMMAND_LINE_ARG = '--product'
+NUMJSON_PAYLOAD_KEY = 'payload'
+OUTPUT_NUMJSON_KEY = '"object"'
+OUTPUT_TOTAL_KEY = '"total"'
+
+
+# ----- main -------------------------------------------------------------------
+
+# the main method to parse stdin json blob to produce the arithmetic output json
+def main():
+    global OUTPUT_NUMJSON_KEY, OUTPUT_TOTAL_KEY
+
+    # ensure argument is valid before proceeding
+    if not checkFirstArgumentValid(argv):
+        return
+    
+    # set the initial total and the function to aggregate the numJson objects
+    initVal, opFunction = determineInitValAndOpFunction(argv[1])
+    
+    # get all standard input until EOF, parse input to json strings
+    inputStr = stdin.read()
+    jsonStrings = parseToJsonStrings(inputStr)
+
+    # iterate over all json strings and print the formatted total json objects
+    for numJsonStr in jsonStrings:
+        numJson = strToJson(numJsonStr)
+        total = findNumJsonTotal(numJson, initVal, opFunction)
+        print('{{{0}: {1}, {2}: {3}}}'.format(
+            OUTPUT_NUMJSON_KEY, numJsonStr,
+            OUTPUT_TOTAL_KEY, total))
+
+
+
+# ----- program init methods ---------------------------------------------------
+
+# returns a boolean indicating if the program was given only one command line
+# argument and it is either '--sum' or '--product'
+def checkFirstArgumentValid(givenArgs):
+    global SUM_COMMAND_LINE_ARG, PRODUCT_COMMAND_LINE_ARG
+    validArgs = [SUM_COMMAND_LINE_ARG, PRODUCT_COMMAND_LINE_ARG]
+
+    # ensure we got the necessary argument
+    if len(givenArgs) != 2 or givenArgs[1] not in validArgs:
+        print('Error: must provide one of the following arguments only: {0}'
+                .format(' '.join(validArgs)))
+        return False
+
+    # the only given arg is valid 
+    return True
+
+
+# returns pair of:   initVal,opFunction   depending on the given argument
+def determineInitValAndOpFunction(arg):
+    global SUM_COMMAND_LINE_ARG, PRODUCT_COMMAND_LINE_ARG
+    if arg == SUM_COMMAND_LINE_ARG:
+        return 0, lambda x, y: x + y
+    elif arg == PRODUCT_COMMAND_LINE_ARG:
+        return 1, lambda x, y: x * y
+    # this should never happen, should only call after checkFirstArgumentValid
+    raise RuntimeError('{0} given invalid argument: {1}'.format(
+        determineInitValAndOpFunction.__name__, arg))
+
+
+
+# ----- json parsing methods ---------------------------------------------------
+
+# returns a list from given elements list that whose memebers have equal number
+# start and end strings across all its elements (counts curly braces for ex.)
+def isolateGroup(start, end, elements):
+    count = 0
+    group = list()
+    for element in elements:
+        group.append(element)
+        if element.startswith(start):
+            count += 1
+        if element.endswith(end):
+            count -= 1
+        if count == 0:
+            break
+    return group
+
+
+# parses the inputStr (json objects delimited by whitespace) to a list of well
+# formed json strings
+def parseToJsonStrings(inputStr):
+    strings = list()
+    groupers = { '[': ']', '{': '}' }
+    # splits string delimited by space and newline, preserves whitespace in
+    # between quotations
+    inputList = whitespaceSplit(inputStr, posix = False)
+    while len(inputList) != 0:
+        group = list()
+        arg = inputList[0]
+        start = str(arg[0]) # no empty strings returned by whitespaceSplit
+        # primitive type is a full group
+        if start not in groupers.keys():
+            group = [arg]
+        # either a list or dictionary, must combine the whole group together
+        else:
+            group = isolateGroup(start, groupers[start], inputList)
+        inputList = inputList[len(group):]
+        strings.append(''.join(group))
+    return strings
+
+
+# recursive: finds the total value of the well formed numJson object (int, list
+# or dictionary) based on the given total and opFunction, a function pointer
+# that accepts two integers and returns an integer
+def findNumJsonTotal(numJson, total, opFunction):
+    global NUMJSON_PAYLOAD_KEY
+    # check types
+    if isinstance(numJson, int):
+        total = opFunction(total, numJson)
+    elif isinstance(numJson, list):
+        # array iterates through each numjson element
+        for nj in numJson:
+            total = findNumJsonTotal(nj, total, opFunction)
+    elif isinstance(numJson, dict):
+        # object checks for payload
+        nj = numJson.get(NUMJSON_PAYLOAD_KEY, None)
+        if nj is not None:
+            total = findNumJsonTotal(nj, total, opFunction)
+
+    # unexpected object type (string, double etc...) return the current total
+    return total
+
+
+# ----- linux entry ------------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

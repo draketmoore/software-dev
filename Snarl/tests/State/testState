@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+#
+# testState (python executable)
+# authors: Michael Curley & Drake Moore
+# notes:
+#   - based on testLevel code
+#
+
+from actor import Player
+from levelManagerBuilder import LevelManagerBuilder
+from levelManager import LevelManager
+from hallway import Hallway
+from json import dumps as jsonToStr, loads as strToJson
+from level import Level
+from point import Point
+from room import Room
+from sys import stdin
+from tile import Tile
+
+
+# ----- globals (constants) ----------------------------------------------------
+
+TYPE_KEY = 'type'
+ROOMS_KEY = 'rooms'
+HALLWAYS_KEY = 'hallways'
+OBJECTS_KEY = 'objects'
+TRAVERSABLE_KEY = 'traversable'
+REACHABLE_KEY = 'reachable'
+OBJECT_KEY = 'object'
+KEY_TYPE = 'key'
+EXIT_TYPE = 'exit'
+LEVEL_KEY = 'level'
+PLAYERS_KEY = 'players'
+ADVERSARIES_KEY = 'adversaries'
+EXIT_LOCKED_KEY = 'exit-locked'
+NAME_KEY = 'name'
+VOID_KEY = 'void'
+ROOM_KEY = 'room'
+HALLWAY_KEY = 'hallway'
+POSITION_KEY = 'position'
+ORIGIN_KEY = 'origin'
+BOUNDS_KEY = 'bounds'
+LAYOUT_KEY = 'layout'
+ROWS_KEY = 'rows'
+COLUMNS_KEY = 'columns'
+FROM_KEY = 'from'
+TO_KEY = 'to'
+WAYPOINTS_KEY = 'waypoints'
+TILE_ID_MAP = { 0: Tile.WALL, 1: Tile.EMPTY, 2: Tile.DOOR }
+
+
+# ----- main -------------------------------------------------------------------
+
+def main():
+    jsonState, name, jsonPoint = getRawJsonInput()
+    levelManager = createLevelManager(jsonState)
+    destination = createPoint(jsonPoint)
+    try:
+        actor = levelManager.getActorIfExists(name)
+        if not isinstance(actor, Player):
+            raise ValueError
+    except ValueError:
+        print('[ "Failure", "Player ", "{0}", " is not a part of the game." ]'.format(
+            name))
+        return
+    if levelManager.moveActor(name, destination):
+        formatSuccessOutput(levelManager, jsonState, name)
+    else:
+        print('[ "Failure", "The destination position ", {0}, " is invalid." ]'.format(
+            jsonToStr(pointToJson(destination))))
+
+    # ----- end main -----------------------------------------------------------
+
+
+def getRawJsonInput() -> (dict, list):
+    """ gets raw user input and returns a tuple of the json state, name and point """
+    jsonIn = strToJson(stdin.read())
+    jsonState = jsonIn[0]
+    name = jsonIn[1]
+    jsonPoint = jsonIn[2]
+    return jsonState, name, jsonPoint
+
+
+def formatSuccessOutput(levelManager: LevelManager, jsonState: dict, name: str):
+    """ formats the output and prints to stdout """
+    global PLAYERS_KEY, EXIT_LOCKED_KEY
+    jsonOut = ['Success']
+    jsonPlayerAndName = ['Player ', name]
+    actor = levelManager.getActorIfExists(name)
+    if actor.exited:
+        jsonOut += jsonPlayerAndName + [' exited.']
+        removePlayerFromJson(jsonState, name)
+    elif actor.expelled:
+        jsonOut += jsonPlayerAndName + [' was ejected.']
+        removePlayerFromJson(jsonState, name)
+    else:
+        movePlayerInJson(jsonState, name, actor.location)
+    jsonState[EXIT_LOCKED_KEY] = not levelManager.keyCollected
+    jsonOut += [jsonState]
+    print(jsonToStr(jsonOut))
+
+
+def removePlayerFromJson(jsonState: dict, name: str):
+    """ removes the actor-position from the players list in the state object """
+    global PLAYERS_KEY, NAME_KEY
+    jsonState[PLAYERS_KEY] = list(filter(
+        lambda ap: ap[NAME_KEY] != name,
+        jsonState[PLAYERS_KEY]))
+
+
+def movePlayerInJson(jsonState: dict, name: str, location: Point):
+    """ sets the players location to the given point """
+    global PLAYERS_KEY, NAME_KEY, POSITION_KEY
+    def setPosition(ap: dict) -> dict:
+        if ap[NAME_KEY] == name:
+            ap[POSITION_KEY] = pointToJson(location)
+        return ap
+    jsonState[PLAYERS_KEY] = list(map(setPosition, jsonState[PLAYERS_KEY]))
+
+
+def createLevelManager(jsonState: dict) -> LevelManager:
+    """ creates the custom implementation of GameState from the json state """
+    global LEVEL_KEY, PLAYERS_KEY, ADVERSARIES_KEY, EXIT_LOCKED_KEY
+    builder = LevelManagerBuilder()
+    keyLocation, exitLocation, level = createLevel(jsonState[LEVEL_KEY])
+    builder.addLevelComponent(level)
+    builder.setKeyLocation(keyLocation)
+    builder.setExitLocation(exitLocation)
+    builder.setKeyCollected(not jsonState[EXIT_LOCKED_KEY])
+    registerPlayers(builder, jsonState[PLAYERS_KEY])
+    registerAdversaries(builder, jsonState[ADVERSARIES_KEY])
+    return builder.build()
+
+
+def createLevel(jsonLevel: dict) -> (Point, Point, Level):
+    """ creates the custom implementation of Level from the json level """
+    global ROOMS_KEY, HALLWAYS_KEY, OBJECTS_KEY
+    jsonRooms = jsonLevel[ROOMS_KEY]
+    jsonHallways = jsonLevel[HALLWAYS_KEY]
+    jsonObjects = jsonLevel[OBJECTS_KEY]
+    rooms = list(map(createRoom, jsonRooms))
+    hallways = list(map(createHallway, jsonHallways))
+    keyPosition, exitPosition = getKeyAndExitPositionsFromJsonObjects(jsonObjects)
+    return keyPosition, exitPosition, Level(rooms, hallways)
+
+
+def registerPlayers(builder: LevelManagerBuilder, jsonPlayerPositions: list):
+    """ registers the players with the game builder """
+    ids = 'abcdefghijklmnopqrstuvwxyz0123456789'
+    for jsonActorPosition in jsonPlayerPositions:
+        _, playerName, jsonPoint = getActorTypeNameAndPosition(jsonActorPosition)
+        builder.registerPlayer(ids[0], playerName, createPoint(jsonPoint))
+        ids = ids[1:]
+
+
+def registerAdversaries(builder: LevelManagerBuilder, jsonAdversaryPositions: list):
+    """ registers the adversaries with the game builder """
+    for jsonActorPosition in jsonAdversaryPositions:
+        adversaryType, adversaryName, jsonPoint = getActorTypeNameAndPosition(jsonActorPosition)
+        builder.registerAdversary(adversaryType, adversaryName, createPoint(jsonPoint))
+
+
+def getActorTypeNameAndPosition(jsonActorPosition: dict) -> (str, str, list):
+    """ returns a tuple of the actor type, name and json point """
+    global TYPE_KEY, NAME_KEY, POSITION_KEY
+    actorType = jsonActorPosition[TYPE_KEY]
+    name = jsonActorPosition[NAME_KEY]
+    position = jsonActorPosition[POSITION_KEY]
+    return actorType, name, position
+
+
+def createRoom(jsonRoom: dict) -> Room:
+    """ creates the custom implementation of Room from the json room """
+    global ORIGIN_KEY, LAYOUT_KEY, TILE_ID_MAP
+    jsonOrigin = jsonRoom[ORIGIN_KEY]
+    upperLeftPosition = createPoint(jsonOrigin)
+    jsonLayout = jsonRoom[LAYOUT_KEY]
+    layout = list(map(lambda row: list(map(TILE_ID_MAP.get, row)), jsonLayout))
+    return Room(upperLeftPosition, layout)
+
+
+def createHallway(jsonHallway: dict) -> Hallway:
+    """ creates the custom implementation of Hallway from the json hallway """
+    global FROM_KEY, TO_KEY, WAYPOINTS_KEY
+    jsonFrom = jsonHallway[FROM_KEY]
+    jsonTo = jsonHallway[TO_KEY]
+    jsonWaypoints = jsonHallway[WAYPOINTS_KEY]
+    allJsonWaypoints = [jsonFrom] + jsonWaypoints + [jsonTo]
+    allWaypoints = list(map(createPoint, allJsonWaypoints))
+    return Hallway(allWaypoints)
+
+
+def getKeyAndExitPositionsFromJsonObjects(jsonObjects: list) -> (Point, Point):
+    """ extracts the key Point and exit Point from the json objects """
+    global KEY_TYPE, EXIT_TYPE
+    keyPoint = extractPointTypeFromJsonObjects(jsonObjects, KEY_TYPE)
+    exitPoint = extractPointTypeFromJsonObjects(jsonObjects, EXIT_TYPE)
+    return keyPoint, exitPoint
+
+
+def extractPointTypeFromJsonObjects(jsonObjects: list, jsonType: str) -> Point:
+    """ extracts a Point from the json objects of the specified type """
+    global TYPE_KEY, POSITION_KEY
+    jsonObject = list(filter(lambda jsonObject: jsonObject[TYPE_KEY] == jsonType, jsonObjects))[0]
+    jsonPoint = jsonObject[POSITION_KEY]
+    return createPoint(jsonPoint)
+
+
+def createPoint(jsonPoint: list) -> Point:
+    """ creates the custom implementation of Point from the json point """
+    return Point(jsonPoint[1], jsonPoint[0])
+
+
+def pointToJson(point: Point) -> list:
+    """ returns the point as the json representation for output """
+    return [point.Y, point.X]
+
+
+# ----- executable entry -------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

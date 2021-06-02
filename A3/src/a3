@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+#
+# a3 (python3 executable)
+# authors: Michael Curley & Drake Moore
+# NOTES:
+#   - main method was the only thing updated from a2 to accomodate changes for a
+#     tcp connection, unused methods from a2 have been deleted
+#
+
+from json import loads as strToJson
+from shlex import split as whitespaceSplit
+from socket import socket, AF_INET, SOCK_STREAM
+
+# globals (constants)
+SUM_OPERATION_ARG = '--sum'
+PRODUCT_OPERATION_ARG = '--product'
+DEFAULT_OPERATION_ARG = SUM_OPERATION_ARG
+INPUT_END_TOKEN = 'END'
+DEFAULT_SERVER_HOST = 'localhost'
+DEFAULT_SERVER_PORT = 8000
+SOCKET_DATA_ENCODING = 'utf-8'
+NUMJSON_PAYLOAD_KEY = 'payload'
+OUTPUT_NUMJSON_KEY = '"object"'
+OUTPUT_TOTAL_KEY = '"total"'
+
+
+# ----- main -------------------------------------------------------------------
+
+# the main method to parse json blobs over a tcp connection to produce the
+# arithmetic output json to send back over the connection
+def main(serverHost = None, serverPort = None, operationArg = None):
+
+    # overwrite optional arguments to global defaults if none given
+    global DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT, DEFAULT_OPERATION_ARG
+    if serverHost is None:
+        serverHost = DEFAULT_SERVER_HOST
+    if serverPort is None:
+        serverPort = DEFAULT_SERVER_PORT
+    if operationArg is None:
+        operationArg = DEFAULT_OPERATION_ARG
+
+    # set the initial total and the function to aggregate the numJson objects
+    initVal, opFunction = determineInitValAndOpFunction(operationArg)
+    
+    # open and bind the socket to the indicated host and port, listen for
+    # connection
+    serverSocket = socket(AF_INET, SOCK_STREAM)
+    try:
+        serverSocket.bind((serverHost, serverPort))
+        serverSocket.listen()
+        clientConnection, clientAddress = serverSocket.accept()
+        try:
+            # accumulate all the raw input and numJsonStrings sent over the
+            # connection
+            rawInput = ''
+            numJsonStrings = list()
+            global INPUT_END_TOKEN, SOCKET_DATA_ENCODING
+            while 1:
+                # receive the data and break if none received
+                data = clientConnection.recv(4096)
+                if data == None:
+                    break
+                
+                # append the newly received data and convert to json strings
+                rawInput += data.decode(SOCKET_DATA_ENCODING)
+                numJsonStrings = parseToJsonStrings(rawInput, INPUT_END_TOKEN)
+
+                # break once the token is found, ignore any data after the token
+                if INPUT_END_TOKEN in numJsonStrings:
+                    endTokenIdx = numJsonStrings.index(INPUT_END_TOKEN)
+                    numJsonStrings = numJsonStrings[:endTokenIdx]
+                    break
+
+            # iterate over all json strings and accumluate the formatted total
+            # json objects
+            output = list()
+            global OUTPUT_NUMJSON_KEY, OUTPUT_TOTAL_KEY
+            for numJsonStr in numJsonStrings:
+                numJson = strToJson(numJsonStr)
+                total = findNumJsonTotal(numJson, initVal, opFunction)
+                output.append('{{{0}: {1}, {2}: {3}}}\n'.format(
+                    OUTPUT_NUMJSON_KEY, numJsonStr,
+                    OUTPUT_TOTAL_KEY, total))
+
+            # send the total output back to the client
+            rawOutput = ''.join(output).encode(SOCKET_DATA_ENCODING)
+            clientConnection.sendall(rawOutput)
+        except Exception as connectionEx:
+            print('Error for connection:', connectionEx)
+        finally:
+            clientConnection.close()
+    except Exception as socketEx:
+        print('Error for socket:', socketEx)
+    finally:
+        serverSocket.close()
+
+
+# ----- program init methods ---------------------------------------------------
+
+# returns pair of:   initVal,opFunction   depending on the given argument
+def determineInitValAndOpFunction(operationArg):
+    global SUM_OPERATION_ARG, PRODUCT_OPERATION_ARG
+    if operationArg == SUM_OPERATION_ARG:
+        return 0, lambda x, y: x + y
+    elif operationArg == PRODUCT_OPERATION_ARG:
+        return 1, lambda x, y: x * y
+    # unexpected argument given
+    raise RuntimeError('{0} given invalid argument: {1}'.format(
+        determineInitValAndOpFunction.__name__, operationArg))
+
+
+# ----- json parsing methods ---------------------------------------------------
+
+# parses the inputStr (json objects delimited by whitespace) to a list of well
+# formed json strings ending with the endToken, the returned list contains end
+# token
+def parseToJsonStrings(inputStr, endToken):
+    curJson = ''
+    strings = list()
+    splitList = whitespaceSplit(inputStr, posix = False) 
+    for s in splitList:
+        curJson += s
+        # upon finding the end token do not process any more data
+        if curJson == endToken:
+            strings.append(curJson)
+            break
+
+        # attempt to convert the string to a json object, if it fails try with
+        # the next string appended
+        try:
+            blob = strToJson(curJson)
+            strings.append(curJson)
+            curJson = ''
+        except:
+            pass
+    return strings
+
+
+# recursive: finds the total value of the well formed numJson object (int, list
+# or dictionary) based on the given total and opFunction, a function pointer
+# that accepts two integers and returns an integer
+def findNumJsonTotal(numJson, total, opFunction):
+    global NUMJSON_PAYLOAD_KEY
+    # check types
+    if isinstance(numJson, int):
+        total = opFunction(total, numJson)
+    elif isinstance(numJson, list):
+        # array iterates through each numjson element
+        for nj in numJson:
+            total = findNumJsonTotal(nj, total, opFunction)
+    elif isinstance(numJson, dict):
+        # object checks for payload
+        nj = numJson.get(NUMJSON_PAYLOAD_KEY, None)
+        if nj is not None:
+            total = findNumJsonTotal(nj, total, opFunction)
+
+    # unexpected object type (string, double etc...) return the current total
+    return total
+
+
+# ----- linux entry ------------------------------------------------------------
+
+if __name__ == '__main__':
+    # main can optionally take some parameters based on command line input,
+    # however that is not specified for this assignment so just using defaults
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+

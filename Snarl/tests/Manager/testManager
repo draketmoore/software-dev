@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+#
+# testManager (python executable)
+# authors: Michael Curley & Drake Moore
+#
+
+from actor import Actor, Player, Zombie
+from controller import Controller, NoMoveController
+from levelManagerBuilder import LevelManagerBuilder
+from levelManager import LevelManager
+from gameState import GameState
+from interactable import Interactable
+from json import dumps as jsonToStr, loads as strToJson
+from point import Point
+from snarlParser import SnarlParser, ID_TILE_MAP
+from sys import stdin
+from tile import Tile
+
+# the global manager trace list that will be continually appened to during the
+# test harness
+ManagerTrace = list()
+ADV_TYPE = 'ghost'
+ADV_PREFIX = 'ghost'
+
+# ----- main -------------------------------------------------------------------
+
+def main():
+    playerNames, jsonLevel, turnCount, jsonStartPositions, jsonMoveLists = getRawJsonInput()
+    levelParser = SnarlParser(jsonLevel)
+    startPositions = list(map(lambda p: SnarlParser().createPoint(p), jsonStartPositions))
+    moveLists = list(map(lambda ms: list(map(lambda m: SnarlParser().createPoint(m['to']), ms)), jsonMoveLists))
+    levelManager, moves = createLevelManager(levelParser, playerNames, moveLists, startPositions)
+    playGame(levelManager, moves, turnCount)
+    formatOutput(levelManager)
+
+
+    # ----- end main -----------------------------------------------------------
+
+
+def getRawJsonInput() -> (dict, list):
+    """ gets raw user input and returns a tuple of the json state, name and point """
+    jsonIn = strToJson(stdin.read())
+    playerNames = jsonIn[0]
+    jsonLevel = jsonIn[1]
+    turnCount = jsonIn[2]
+    jsonStartPositions = jsonIn[3]
+    jsonMoveLists = jsonIn[4]
+    return playerNames, jsonLevel, turnCount, jsonStartPositions, jsonMoveLists
+
+
+def formatOutput(levelManager: LevelManager):
+    """ formats the output as expected for the test harness from global
+    ManagerTrace and the levelManager state """
+    global ManagerTrace
+    gameState = levelManager.getObserverGameState()
+    jsonState = SnarlParser().gameStateToJson(gameState)
+    print(jsonToStr([jsonState, ManagerTrace]))
+    # DEBUG: leaving this here for later if we want it...
+#    from pprint import pformat
+#    print(pformat([jsonState, ManagerTrace]).replace("'", '"').replace('False', 'false').replace('True', 'true').replace('None', 'null'))
+
+
+
+# ----- controller class def ---------------------------------------------------
+# our game manager has the ability to update a controller of every actor so we
+# are utilizing that functionality in a 'SharedController' to add to a global
+# ManagerTrace list
+
+class SharedController(Controller):
+    """ represents a contorller that can be shared between players to trace
+    updates from the game manager """
+
+    def updateGameState(self, gameState):
+        """ overwritten method, will add the player-update manager trace entry
+        to the global Manager Trace """
+        # only allow updates for players in the game
+        if not gameState.actor.expelled and not gameState.actor.exited:
+            global ManagerTrace
+            objects, actors = self.getObjectsAndActors(gameState)
+            ManagerTrace.append([gameState.actor.name, {
+                'type': 'player-update',
+                'layout': self.getLayout(gameState),
+                'position': self.getPosition(gameState),
+                'objects': objects,
+                'actors': actors
+            }])
+
+    def getLayout(self, gameState) -> list:
+        """ returns the layout as expected for the manager trace entry """
+        layout = list()
+        knownLayout = gameState.getKnownLayout()
+        for row in range(len(knownLayout)):
+            layout.append(list())
+            for col in range(len(knownLayout[row])):
+                tile = knownLayout[row][col]
+                # actors are placed in our layouts, for the test they are
+                # omitted, replace with empty tiles
+                if isinstance(tile, Actor):
+                    layout[row].append(ID_TILE_MAP[tile.replacedTile])
+                    if tile == gameState.actor:
+                        playerLoc = Point(col, row)
+                else:
+                    layout[row].append(ID_TILE_MAP[tile])
+        return self.squareLayout(layout, playerLoc, gameState.actor.viewRadius)
+
+    def squareLayout(self, layout, playerLoc, center) -> list:
+        """ given a known layout, if it is at a border then the layout will not
+        be a square, method adds WALL tiles to edges until it is square """
+        size = (center * 2) + 1
+        for _ in range(center - playerLoc.X):
+            for row in layout:
+                row.insert(0, ID_TILE_MAP[Tile.WALL])
+        while len(layout[0]) < size:
+            for row in layout:
+                row.append(ID_TILE_MAP[Tile.WALL])
+        for _ in range(center - playerLoc.Y):
+            layout.insert(0, self.createVoidRowOfSize(size))
+        while len(layout) < size:
+            layout.append(self.createVoidRowOfSize(size))
+        return layout
+
+    def createVoidRowOfSize(self, size) -> list:
+        """ returns a row size elements long of void tiles """
+        row = list()
+        for i in range(size):
+            row.append(ID_TILE_MAP[Tile.WALL])
+        return row
+
+    def getPosition(self, gameState) -> list:
+        """ returns the actor position in json form for the manager trace entry """
+        return SnarlParser().pointToJson(gameState.actor.location)
+
+    def getObjectsAndActors(self, gameState) -> (list, list):
+        """ returns a tuple of objects json list and actors json list for the
+        manager trace entry """
+        global ADV_TYPE
+        objects = list()
+        actors = list()
+        wRange, hRange = self.getWidthAndHeightRanges(gameState)
+        for col in wRange:
+            for row in hRange:
+                loc = Point(col, row)
+                pos = SnarlParser().pointToJson(loc)
+                if loc == gameState.actor.location:
+                    tile = gameState.actor.replacedTile
+                else:
+                    tile = gameState.floorPlan.getTileInLayout(loc)
+                if isinstance(tile, Interactable):
+                    objects.append({
+                        'type': 'key' if tile == Interactable.KEY else 'exit',
+                        'position': pos
+                    })
+                elif isinstance(tile, Actor):
+                    actors.append({
+                        'type': 'player' if isinstance(tile, Player) else ADV_TYPE, # if copying make sure to pull real adversary type
+                        'name': tile.name,
+                        'position': pos
+                    })
+        return objects, actors
+
+    def getWidthAndHeightRanges(self, gameState):
+        """ returns the ranges of tiles to check surrounding the player for
+        actors and objects """
+        loc = gameState.actor.location
+        vr = gameState.actor.viewRadius
+        fp = gameState.floorPlan
+        ulAnchor = fp.upperLeftPosition
+        lrAnchor = fp.lowerRightPosition
+        wr = range(max(loc.X - vr, ulAnchor.X), min(loc.X + vr, lrAnchor.X) + 1)
+        hr = range(max(loc.Y - vr, ulAnchor.Y), min(loc.Y + vr, lrAnchor.Y) + 1)
+        return wr, hr
+
+
+
+# ----- end SharedManager ------------------------------------------------------
+
+
+def createLevelManager(levelParser: SnarlParser, playerNames: list, moveLists: list,
+        startPositions: list) -> (LevelManager, dict):
+    """ returns a tuple of LevelManager, player moves (indexed by player name) """
+    global ADV_TYPE, ADV_PREFIX
+    builder = LevelManagerBuilder().addLevelComponent(levelParser.level
+        ).setKeyLocation(levelParser.keyLocation
+        ).setExitLocation(levelParser.exitLocation)
+    moves = dict()
+    playerNum = 1
+    while len(playerNames):
+        name = playerNames.pop(0)
+        moves[name] = moveLists.pop(0)
+        builder.registerPlayer(str(playerNum), name,
+                startPositions.pop(0), SharedController())
+        playerNum += 1
+    advNum = 1
+    while len(startPositions):
+        builder.registerAdversary(ADV_TYPE, ADV_PREFIX + str(advNum),
+                startPositions.pop(0), NoMoveController())
+        advNum += 1
+    return builder.build(), moves
+
+
+def playGame(levelManager: LevelManager, moves: dict, turnCount: int):
+    """ plays the game until the turnCount expires, alternatively, the game ends
+    once any player has run out of moves """
+    # initial update
+    levelManager.updateActors()
+    while turnCount > 0:
+        for playerName in levelManager.players:
+            player = levelManager.players[playerName]
+            if player.expelled or player.exited:
+                continue
+            if not makeMove(levelManager, playerName, moves):
+                return
+            # update after each move
+            levelManager.updateActors()
+        turnCount -= 1
+
+
+def makeMove(levelManager: LevelManager, playerName: str, moves: dict) -> bool:
+    """ returns if a move could be made """
+    global ManagerTrace
+    oldGs = levelManager.getActorGameState(playerName)
+    while 1:
+        if len(moves[playerName]) == 0:
+            return False
+        move = moves[playerName].pop(0)
+        trace = [playerName, {
+            'type': 'move',
+            'to': SnarlParser().pointToJson(move)
+        }]
+        if levelManager.moveActor(playerName,
+                oldGs.actor.location if move is None else move):
+            addMoveTraceResult(trace, oldGs, levelManager.getActorGameState(playerName))
+            break
+        trace.append('Invalid')
+        ManagerTrace.append(trace)
+    return True
+
+
+def addMoveTraceResult(trace: list, oldGs: GameState, newGs: GameState):
+    """ adds a trace entry based on a successful move and the difference of
+    game states """
+    global ManagerTrace
+    if newGs.exitUnlocked and not oldGs.exitUnlocked:
+        trace.append('Key')
+    elif newGs.actor.exited:
+        trace.append('Exit')
+    elif newGs.actor.expelled:
+        trace.append('Eject')
+    else:
+        trace.append('OK')
+    ManagerTrace.append(trace)
+
+
+# ----- executable entry -------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+
+# ----- end of file ------------------------------------------------------------
+
+
+
+
+
